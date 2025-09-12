@@ -3,7 +3,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
-void gate_pin_init(gpio_num_t gpio, bool active_high) {
+static void gate_pin_init(gpio_num_t gpio, bool active_high) {
     gpio_config_t io = {
         .pin_bit_mask = 1ULL << gpio,
         .mode = GPIO_MODE_OUTPUT,
@@ -15,20 +15,20 @@ void gate_pin_init(gpio_num_t gpio, bool active_high) {
     gpio_set_level(gpio, active_high ? 0 : 1);
 }
 
-void gate_driver_init(gate_state initial_state) {
+void gate_driver_init() {
     gate_pin_init(SIGNAL_PEDESTRIAN_PIN, true);
     gate_pin_init(SIGNAL_SEQUENCE_PIN, true);
     gate_pin_init(SIGNAL_OPEN_PIN, true);
     gate_pin_init(SIGNAL_CLOSE_PIN, true);
 }
 
-void short_signal(gpio_num_t gpio) {
+static void short_signal(gpio_num_t gpio) {
     gpio_set_level(gpio, true);
     vTaskDelay(pdMS_TO_TICKS(SIGNAL_DURATION));
     gpio_set_level(gpio, false);
 }
 
-void set_gate_state(gate_state state) {
+void call_gate_cmd(gate_cmd state) {
         switch (state) {
         case GATE_PEDESTRIAN:
             short_signal(SIGNAL_PEDESTRIAN_PIN);

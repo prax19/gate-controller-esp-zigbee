@@ -26,6 +26,7 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
     switch (sig_type) {
     case ESP_ZB_ZDO_SIGNAL_SKIP_STARTUP:
         ESP_LOGI(TAG, "Zigbee stack initialized");
+        esp_zb_secur_network_min_join_lqi_set(0);
         esp_zb_bdb_start_top_level_commissioning(ESP_ZB_BDB_MODE_INITIALIZATION);
         break;
     case ESP_ZB_BDB_SIGNAL_DEVICE_FIRST_START:
@@ -57,8 +58,12 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
         }
         break;
     default:
-        ESP_LOGI(TAG, "ZDO signal: %s (0x%x), status: %s", esp_zb_zdo_signal_to_string(sig_type), sig_type,
-                 esp_err_to_name(err_status));
+        if (err_status != ESP_OK) {
+            ESP_LOGW(TAG, "Signal %s(0x%x) fail %s – retry steering…",
+                     esp_zb_zdo_signal_to_string(sig_type), sig_type, esp_err_to_name(err_status));
+        } else {
+            ESP_LOGI(TAG, "Signal %s(0x%x) OK", esp_zb_zdo_signal_to_string(sig_type), sig_type);
+        }
         break;
     }
 }
@@ -79,7 +84,7 @@ static esp_err_t zb_attribute_handler(const esp_zb_zcl_set_attr_value_message_t 
                 light_state = message->attribute.data.value ? *(bool *)message->attribute.data.value : light_state;
                 ESP_LOGI(TAG, "Light sets to %s", light_state ? "On" : "Off");
                 set_user_led_state(light_state);
-                set_gate_state(light_state ? GATE_OPEN: GATE_CLOSE);
+                call_gate_cmd(light_state ? GATE_OPEN: GATE_CLOSE);
             }
         }
     }
@@ -110,6 +115,7 @@ static void esp_zb_task(void *pvParameters)
     esp_zb_device_register(esp_zb_on_off_light_ep);
     esp_zb_core_action_handler_register(zb_action_handler);
     esp_zb_set_primary_network_channel_set(ESP_ZB_PRIMARY_CHANNEL_MASK);
+    esp_zb_set_tx_power(20);
     ESP_ERROR_CHECK(esp_zb_start(false));
     esp_zb_main_loop_iteration();
 }
