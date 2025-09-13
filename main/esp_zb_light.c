@@ -78,7 +78,7 @@ static esp_err_t zb_attribute_handler(const esp_zb_zcl_set_attr_value_message_t 
                         message->info.status);
     ESP_LOGI(TAG, "Received message: endpoint(%d), cluster(0x%x), attribute(0x%x), data size(%d)", message->info.dst_endpoint, message->info.cluster,
              message->attribute.id, message->attribute.data.size);
-    if (message->info.dst_endpoint == HA_ESP_LIGHT_ENDPOINT) {
+    if (message->info.dst_endpoint == HA_ESP_GATE_ENDPOINT) {
         if (message->info.cluster == ESP_ZB_ZCL_CLUSTER_ID_ON_OFF) {
             if (message->attribute.id == ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID && message->attribute.data.type == ESP_ZB_ZCL_ATTR_TYPE_BOOL) {
                 light_state = message->attribute.data.value ? *(bool *)message->attribute.data.value : light_state;
@@ -110,9 +110,66 @@ static void esp_zb_task(void *pvParameters)
     /* initialize Zigbee stack */
     esp_zb_cfg_t zb_nwk_cfg = ESP_ZB_ZED_CONFIG();
     esp_zb_init(&zb_nwk_cfg);
-    esp_zb_on_off_light_cfg_t light_cfg = ESP_ZB_DEFAULT_ON_OFF_LIGHT_CONFIG();
-    esp_zb_ep_list_t *esp_zb_on_off_light_ep = esp_zb_on_off_light_ep_create(HA_ESP_LIGHT_ENDPOINT, &light_cfg);
-    esp_zb_device_register(esp_zb_on_off_light_ep);
+
+    /* Basic config variables */
+    uint8_t zcl_ver = 3;
+    uint8_t power_src = 0x01;
+    uint16_t identify_time = 0;
+    uint8_t name_support = 0;
+
+    esp_zb_attribute_list_t *basic = esp_zb_zcl_attr_list_create(ESP_ZB_ZCL_CLUSTER_ID_BASIC);
+    esp_zb_basic_cluster_add_attr(basic, ESP_ZB_ZCL_ATTR_BASIC_ZCL_VERSION_ID, &zcl_ver);
+    esp_zb_basic_cluster_add_attr(basic, ESP_ZB_ZCL_ATTR_BASIC_POWER_SOURCE_ID, &power_src);
+    esp_zb_basic_cluster_add_attr(basic, ESP_ZB_ZCL_ATTR_BASIC_MODEL_IDENTIFIER_ID,   &ESP_MODEL_IDENTIFIER[0]);
+    esp_zb_basic_cluster_add_attr(basic, ESP_ZB_ZCL_ATTR_BASIC_MANUFACTURER_NAME_ID,  &ESP_MANUFACTURER_NAME[0]);
+
+    // IDENTIFY (server)
+    esp_zb_attribute_list_t *identify_srv = esp_zb_zcl_attr_list_create(ESP_ZB_ZCL_CLUSTER_ID_IDENTIFY);
+    esp_zb_identify_cluster_add_attr(identify_srv, ESP_ZB_ZCL_ATTR_IDENTIFY_IDENTIFY_TIME_ID, &identify_time);
+
+    // GROUPS (server)
+    esp_zb_attribute_list_t *groups_srv = esp_zb_zcl_attr_list_create(ESP_ZB_ZCL_CLUSTER_ID_GROUPS);
+    esp_zb_groups_cluster_add_attr(groups_srv, ESP_ZB_ZCL_ATTR_GROUPS_NAME_SUPPORT_ID, &name_support);
+
+    // SCENES (server)
+    esp_zb_attribute_list_t *scenes_srv = esp_zb_scenes_cluster_create(NULL);
+
+    // ON/OFF (server)
+    esp_zb_on_off_cluster_cfg_t onoff_cfg = {
+        .on_off = ESP_ZB_ZCL_ON_OFF_ON_OFF_DEFAULT_VALUE
+    };
+    esp_zb_attribute_list_t *onoff_srv = esp_zb_on_off_cluster_create(&onoff_cfg);
+
+    // Binery input (server)
+    esp_zb_binary_input_cluster_cfg_t input_cfg = {
+        .out_of_service=false,
+        .present_value=true,
+        .status_flags=ESP_ZB_ZCL_BINARY_INPUT_STATUS_FLAGS_DEFAULT_VALUE
+    };
+    esp_zb_attribute_list_t *binary_input = esp_zb_binary_input_cluster_create(&input_cfg);
+
+    /* Joining cluster lists */
+    esp_zb_cluster_list_t *clist = esp_zb_zcl_cluster_list_create();
+    esp_zb_cluster_list_add_basic_cluster( clist, basic,        ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
+    esp_zb_cluster_list_add_identify_cluster(clist, identify_srv,ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
+    esp_zb_cluster_list_add_groups_cluster( clist, groups_srv,  ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
+    esp_zb_cluster_list_add_scenes_cluster( clist, scenes_srv,  ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
+    esp_zb_cluster_list_add_on_off_cluster( clist, onoff_srv,   ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
+    esp_zb_cluster_list_add_binary_input_cluster( clist, binary_input,   ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
+
+    /* Device and endpoint registering */
+    esp_zb_ep_list_t *eplist = esp_zb_ep_list_create();
+    esp_zb_endpoint_config_t epcfg = {
+        .endpoint          = HA_ESP_GATE_ENDPOINT,
+        .app_profile_id    = ESP_ZB_AF_HA_PROFILE_ID,
+        .app_device_id     = ESP_ZB_HA_ON_OFF_OUTPUT_DEVICE_ID,
+        .app_device_version= 1,
+    };
+
+    ESP_ERROR_CHECK( esp_zb_ep_list_add_ep(eplist, clist, epcfg) );
+
+    esp_zb_device_register(eplist);
+
     esp_zb_core_action_handler_register(zb_action_handler);
     esp_zb_set_primary_network_channel_set(ESP_ZB_PRIMARY_CHANNEL_MASK);
     esp_zb_set_tx_power(20);
