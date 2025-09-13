@@ -13,9 +13,12 @@
 
 static const char *TAG = "ESP_ZB_ON_OFF_LIGHT";
 /********************* Define functions **************************/
-static void bdb_start_top_level_commissioning_cb(uint8_t mode_mask)
-{
-    ESP_ERROR_CHECK(esp_zb_bdb_start_top_level_commissioning(mode_mask));
+
+void schedule_network_steering() {
+    ESP_LOGI(TAG, "Start secondary network steering");
+    esp_zb_secur_network_min_join_lqi_set(0);
+    esp_zb_scheduler_alarm((esp_zb_callback_t)esp_zb_bdb_start_top_level_commissioning,
+            ESP_ZB_BDB_MODE_NETWORK_STEERING, ED_NETWORK_STEERING_RETRY_TIME);
 }
 
 void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
@@ -26,7 +29,6 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
     switch (sig_type) {
     case ESP_ZB_ZDO_SIGNAL_SKIP_STARTUP:
         ESP_LOGI(TAG, "Zigbee stack initialized");
-        esp_zb_secur_network_min_join_lqi_set(0);
         esp_zb_bdb_start_top_level_commissioning(ESP_ZB_BDB_MODE_INITIALIZATION);
         break;
     case ESP_ZB_BDB_SIGNAL_DEVICE_FIRST_START:
@@ -42,6 +44,7 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
         } else {
             /* commissioning failed */
             ESP_LOGW(TAG, "Failed to initialize Zigbee stack (status: %s)", esp_err_to_name(err_status));
+            schedule_network_steering();
         }
         break;
     case ESP_ZB_BDB_SIGNAL_STEERING:
@@ -54,14 +57,18 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
                      esp_zb_get_pan_id(), esp_zb_get_current_channel(), esp_zb_get_short_address());
         } else {
             ESP_LOGI(TAG, "Network steering was not successful (status: %s)", esp_err_to_name(err_status));
-            esp_zb_scheduler_alarm((esp_zb_callback_t)bdb_start_top_level_commissioning_cb, ESP_ZB_BDB_MODE_NETWORK_STEERING, 1000);
+            schedule_network_steering();
         }
+        break;
+    case ESP_ZB_ZDO_SIGNAL_LEAVE:
+    case ESP_ZB_NWK_SIGNAL_NO_ACTIVE_LINKS_LEFT:
+        schedule_network_steering();
         break;
     default:
         if (err_status != ESP_OK) {
-            esp_zb_secur_network_min_join_lqi_set(0);
             ESP_LOGW(TAG, "Signal %s(0x%x) fail %s – retry steering…",
                      esp_zb_zdo_signal_to_string(sig_type), sig_type, esp_err_to_name(err_status));
+            schedule_network_steering();
         } else {
             ESP_LOGI(TAG, "Signal %s(0x%x) OK", esp_zb_zdo_signal_to_string(sig_type), sig_type);
         }
@@ -114,7 +121,7 @@ static void esp_zb_task(void *pvParameters)
 
     esp_zb_core_action_handler_register(zb_action_handler);
     esp_zb_set_primary_network_channel_set(ESP_ZB_PRIMARY_CHANNEL_MASK);
-    esp_zb_set_tx_power(20);
+    esp_zb_set_tx_power(8);
 
     /* Basic config variables */
     uint8_t zcl_ver = 3;
