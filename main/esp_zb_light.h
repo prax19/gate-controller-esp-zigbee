@@ -1,6 +1,7 @@
 #include "esp_zigbee_core.h"
 #include "led_driver.h"
 #include "gate_driver.h"
+#include "beam_sensor_driver.h"
 
 #define XIAO_RF_EN_GPIO     GPIO_NUM_3
 #define XIAO_RF_ANT_GPIO    GPIO_NUM_14

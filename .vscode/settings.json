@@ -19,6 +19,7 @@
   "idf.flashType": "UART",
   "files.associations": {
     "gpio.h": "c",
-    "led_driver.h": "c"
+    "led_driver.h": "c",
+    "gate_driver.h": "c"
   }
 }

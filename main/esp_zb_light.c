@@ -59,6 +59,7 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
         break;
     default:
         if (err_status != ESP_OK) {
+            esp_zb_secur_network_min_join_lqi_set(0);
             ESP_LOGW(TAG, "Signal %s(0x%x) fail %s – retry steering…",
                      esp_zb_zdo_signal_to_string(sig_type), sig_type, esp_err_to_name(err_status));
         } else {
@@ -111,6 +112,10 @@ static void esp_zb_task(void *pvParameters)
     esp_zb_cfg_t zb_nwk_cfg = ESP_ZB_ZED_CONFIG();
     esp_zb_init(&zb_nwk_cfg);
 
+    esp_zb_core_action_handler_register(zb_action_handler);
+    esp_zb_set_primary_network_channel_set(ESP_ZB_PRIMARY_CHANNEL_MASK);
+    esp_zb_set_tx_power(20);
+
     /* Basic config variables */
     uint8_t zcl_ver = 3;
     uint8_t power_src = 0x01;
@@ -140,13 +145,13 @@ static void esp_zb_task(void *pvParameters)
     };
     esp_zb_attribute_list_t *onoff_srv = esp_zb_on_off_cluster_create(&onoff_cfg);
 
-    // Binery input (server)
-    esp_zb_binary_input_cluster_cfg_t input_cfg = {
-        .out_of_service=false,
-        .present_value=true,
-        .status_flags=ESP_ZB_ZCL_BINARY_INPUT_STATUS_FLAGS_DEFAULT_VALUE
+    // Occupancy sensor (server)
+    esp_zb_occupancy_sensing_cluster_cfg_t occupancy_cfg = {
+        .occupancy=0x00,
+        .sensor_type=0x03,
+        .sensor_type_bitmap=0x04
     };
-    esp_zb_attribute_list_t *binary_input = esp_zb_binary_input_cluster_create(&input_cfg);
+    esp_zb_attribute_list_t *occupancy_sensor_srv = esp_zb_occupancy_sensing_cluster_create(&occupancy_cfg);
 
     /* Joining cluster lists */
     esp_zb_cluster_list_t *clist = esp_zb_zcl_cluster_list_create();
@@ -155,7 +160,7 @@ static void esp_zb_task(void *pvParameters)
     esp_zb_cluster_list_add_groups_cluster( clist, groups_srv,  ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
     esp_zb_cluster_list_add_scenes_cluster( clist, scenes_srv,  ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
     esp_zb_cluster_list_add_on_off_cluster( clist, onoff_srv,   ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
-    esp_zb_cluster_list_add_binary_input_cluster( clist, binary_input,   ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
+    esp_zb_cluster_list_add_occupancy_sensing_cluster( clist, occupancy_sensor_srv,   ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
 
     /* Device and endpoint registering */
     esp_zb_ep_list_t *eplist = esp_zb_ep_list_create();
@@ -170,11 +175,8 @@ static void esp_zb_task(void *pvParameters)
 
     esp_zb_device_register(eplist);
 
-    esp_zb_core_action_handler_register(zb_action_handler);
-    esp_zb_set_primary_network_channel_set(ESP_ZB_PRIMARY_CHANNEL_MASK);
-    esp_zb_set_tx_power(20);
-    ESP_ERROR_CHECK(esp_zb_start(false));
-    esp_zb_main_loop_iteration();
+    ESP_ERROR_CHECK(esp_zb_start(true));
+    esp_zb_stack_main_loop();
 }
 
 static void xiao_rf_switch_init(bool use_external_uFL)
@@ -194,6 +196,34 @@ static void xiao_rf_switch_init(bool use_external_uFL)
     gpio_set_level(XIAO_RF_ANT_GPIO, use_external_uFL ? 1 : 0);
 }
 
+static void zb_set_occupancy(bool beam_broken) {
+    uint8_t v = beam_broken ? 1 : 0;
+    esp_zb_lock_acquire(portMAX_DELAY);
+    esp_zb_zcl_set_attribute_val(HA_ESP_GATE_ENDPOINT,
+        ESP_ZB_ZCL_CLUSTER_ID_OCCUPANCY_SENSING,
+        ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+        ESP_ZB_ZCL_ATTR_OCCUPANCY_SENSING_OCCUPANCY_ID,
+        &v, false);
+    esp_zb_lock_release();
+}
+
+static void beam_task(void *arg) {
+    bool last = beam_read();
+    zb_set_occupancy(last);
+
+    for (;;) {
+        vTaskDelay(pdMS_TO_TICKS(100));
+        bool cur = beam_read();
+        if (cur != last) {
+            cur = beam_read();
+            if (cur != last) {
+                last = cur;
+                zb_set_occupancy(cur);
+            }
+        }
+    }
+}
+
 void app_main(void)
 {
     xiao_rf_switch_init(false);
@@ -205,5 +235,7 @@ void app_main(void)
     ESP_ERROR_CHECK(esp_zb_platform_config(&config));
     led_driver_init(LED_DEFAULT_OFF);
     gate_driver_init(GATE_CLOSE);
+    beam_sensor_driver_init();
     xTaskCreate(esp_zb_task, "Zigbee_main", 4096, NULL, 5, NULL);
+    xTaskCreate(beam_task, "beam", 3072, NULL, 6, NULL);
 }
