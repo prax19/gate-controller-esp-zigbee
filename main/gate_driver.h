@@ -5,12 +5,12 @@
 extern "C" {
 #endif
 
-#define SIGNAL_PEDESTRIAN_PIN     GPIO_NUM_16
-#define SIGNAL_SEQUENCE_PIN       GPIO_NUM_22
-#define SIGNAL_OPEN_PIN           GPIO_NUM_2
-#define SIGNAL_CLOSE_PIN          GPIO_NUM_0
+#define SIGNAL_PEDESTRIAN_PIN     GPIO_NUM_18
+#define SIGNAL_SEQUENCE_PIN       GPIO_NUM_19
+#define SIGNAL_OPEN_PIN           GPIO_NUM_20
+#define SIGNAL_CLOSE_PIN          GPIO_NUM_21
 
-#define SIGNAL_DURATION           200
+#define SIGNAL_DURATION           2000
 
 typedef enum {
     GATE_OPEN,

@@ -9,7 +9,7 @@ extern "C" {
 #define LED_DEFAULT_ON  1
 #define LED_DEFAULT_OFF 0
 
-#define LED_GPIO           GPIO_NUM_15
+#define LED_GPIO           GPIO_NUM_1
 #define LED_ACTIVE_LEVEL   0 
 #define LED_INACTIVE_LEVEL (!LED_ACTIVE_LEVEL)
 
