@@ -6,6 +6,7 @@
 #include "ha/esp_zigbee_ha_standard.h"
 #include "esp_zb_light.h"
 #include "driver/gpio.h"
+#include "temp_sensor_driver.h"
 
 #if !defined ZB_ED_ROLE
 #error Define ZB_ED_ROLE in idf.py menuconfig to compile light (End Device) source code.
@@ -231,6 +232,18 @@ static void beam_task(void *arg) {
     }
 }
 
+static void temp_task(void *arg) {
+    for (;;) {
+        float t = read_temperature();
+        if(!isnan(t)) {
+            ESP_LOGI(TAG, "Temperature: %.2f C", t);
+        } else {
+            ESP_LOGW(TAG, "Failed to read temperature");
+        }
+        vTaskDelay(pdMS_TO_TICKS(8000));
+    }
+}
+
 void app_main(void)
 {
     xiao_rf_switch_init(false);
@@ -243,6 +256,8 @@ void app_main(void)
     led_driver_init(LED_DEFAULT_OFF);
     gate_driver_init(GATE_CLOSE);
     beam_sensor_driver_init();
+    temp_driver_init();
     xTaskCreate(esp_zb_task, "Zigbee_main", 4096, NULL, 5, NULL);
     xTaskCreate(beam_task, "beam", 3072, NULL, 6, NULL);
+    xTaskCreate(temp_task, "temp", 2048, NULL, 2, NULL);
 }

@@ -10,7 +10,7 @@ extern "C" {
 #define SIGNAL_OPEN_PIN           GPIO_NUM_20
 #define SIGNAL_CLOSE_PIN          GPIO_NUM_21
 
-#define SIGNAL_DURATION           2000
+#define SIGNAL_DURATION           200
 
 typedef enum {
     GATE_OPEN,
