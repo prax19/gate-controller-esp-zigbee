@@ -4,7 +4,7 @@
 #include "esp_log.h"
 #include "nvs_flash.h"
 #include "ha/esp_zigbee_ha_standard.h"
-#include "esp_zb_light.h"
+#include "main.h"
 #include "driver/gpio.h"
 #include "temp_sensor_driver.h"
 
@@ -12,14 +12,18 @@
 #error Define ZB_ED_ROLE in idf.py menuconfig to compile light (End Device) source code.
 #endif
 
-static const char *TAG = "ESP_ZB_ON_OFF_LIGHT";
+static const char *TAG = "ESP_ZB_GATE_CONTROLLER";
 /********************* Define functions **************************/
+
+
+led_driver_t *g_led = NULL; // LED handler
 
 void schedule_network_steering() {
     ESP_LOGI(TAG, "Start secondary network steering");
-    esp_zb_secur_network_min_join_lqi_set(0);
+    // esp_zb_secur_network_min_join_lqi_set(0);
     esp_zb_scheduler_alarm((esp_zb_callback_t)esp_zb_bdb_start_top_level_commissioning,
             ESP_ZB_BDB_MODE_NETWORK_STEERING, ED_NETWORK_STEERING_RETRY_TIME);
+    led_driver_set(g_led, LED_MODE_BLINK_FAST, LED_COLOR_BLUE);
 }
 
 void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
@@ -31,6 +35,7 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
     case ESP_ZB_ZDO_SIGNAL_SKIP_STARTUP:
         ESP_LOGI(TAG, "Zigbee stack initialized");
         esp_zb_bdb_start_top_level_commissioning(ESP_ZB_BDB_MODE_INITIALIZATION);
+        led_driver_set(g_led, LED_MODE_BLINK_FAST, LED_COLOR_BLUE);
         break;
     case ESP_ZB_BDB_SIGNAL_DEVICE_FIRST_START:
     case ESP_ZB_BDB_SIGNAL_DEVICE_REBOOT:
@@ -39,12 +44,14 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
             if (esp_zb_bdb_is_factory_new()) {
                 ESP_LOGI(TAG, "Start network steering");
                 esp_zb_bdb_start_top_level_commissioning(ESP_ZB_BDB_MODE_NETWORK_STEERING);
+                led_driver_set(g_led, LED_MODE_BLINK_FAST, LED_COLOR_BLUE);
             } else {
                 ESP_LOGI(TAG, "Device rebooted");
             }
         } else {
             /* commissioning failed */
             ESP_LOGW(TAG, "Failed to initialize Zigbee stack (status: %s)", esp_err_to_name(err_status));
+            led_driver_set(g_led, LED_MODE_ON, LED_COLOR_RED);
             schedule_network_steering();
         }
         break;
@@ -53,20 +60,27 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
             esp_zb_ieee_addr_t extended_pan_id;
             esp_zb_get_extended_pan_id(extended_pan_id);
             ESP_LOGI(TAG, "Joined network successfully (Extended PAN ID: %02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x, PAN ID: 0x%04hx, Channel:%d, Short Address: 0x%04hx)",
-                     extended_pan_id[7], extended_pan_id[6], extended_pan_id[5], extended_pan_id[4],
-                     extended_pan_id[3], extended_pan_id[2], extended_pan_id[1], extended_pan_id[0],
-                     esp_zb_get_pan_id(), esp_zb_get_current_channel(), esp_zb_get_short_address());
+                    extended_pan_id[7], extended_pan_id[6], extended_pan_id[5], extended_pan_id[4],
+                    extended_pan_id[3], extended_pan_id[2], extended_pan_id[1], extended_pan_id[0],
+                    esp_zb_get_pan_id(), esp_zb_get_current_channel(), esp_zb_get_short_address());
+                    led_driver_set(g_led, LED_MODE_ON, LED_COLOR_GREEN);
+                    led_driver_sleep(g_led, 5000);
         } else {
             ESP_LOGI(TAG, "Network steering was not successful (status: %s)", esp_err_to_name(err_status));
+            led_driver_set(g_led, LED_MODE_ON, LED_COLOR_RED);
             schedule_network_steering();
         }
         break;
     case ESP_ZB_ZDO_SIGNAL_LEAVE:
+        led_driver_set(g_led, LED_MODE_BLINK, LED_COLOR_BLUE);
+        break;
     case ESP_ZB_NWK_SIGNAL_NO_ACTIVE_LINKS_LEFT:
+        led_driver_set(g_led, LED_MODE_BLINK, LED_COLOR_RED);
         schedule_network_steering();
         break;
     default:
         if (err_status != ESP_OK) {
+            led_driver_set(g_led, LED_MODE_BLINK_FAST, LED_COLOR_RED);
             ESP_LOGW(TAG, "Signal %s(0x%x) fail %s – retry steering…",
                      esp_zb_zdo_signal_to_string(sig_type), sig_type, esp_err_to_name(err_status));
             schedule_network_steering();
@@ -80,7 +94,7 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
 static esp_err_t zb_attribute_handler(const esp_zb_zcl_set_attr_value_message_t *message)
 {
     esp_err_t ret = ESP_OK;
-    bool light_state = 0;
+    bool light_state = false;
 
     ESP_RETURN_ON_FALSE(message, ESP_FAIL, TAG, "Empty message");
     ESP_RETURN_ON_FALSE(message->info.status == ESP_ZB_ZCL_STATUS_SUCCESS, ESP_ERR_INVALID_ARG, TAG, "Received message: error status(%d)",
@@ -92,8 +106,8 @@ static esp_err_t zb_attribute_handler(const esp_zb_zcl_set_attr_value_message_t 
             if (message->attribute.id == ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID && message->attribute.data.type == ESP_ZB_ZCL_ATTR_TYPE_BOOL) {
                 light_state = message->attribute.data.value ? *(bool *)message->attribute.data.value : light_state;
                 ESP_LOGI(TAG, "Light sets to %s", light_state ? "On" : "Off");
-                set_user_led_state(light_state);
                 call_gate_cmd(light_state ? GATE_OPEN: GATE_CLOSE);
+                led_driver_blink_once(g_led, LED_COLOR_GREEN);
             }
         }
     }
@@ -122,7 +136,7 @@ static void esp_zb_task(void *pvParameters)
 
     esp_zb_core_action_handler_register(zb_action_handler);
     esp_zb_set_primary_network_channel_set(ESP_ZB_PRIMARY_CHANNEL_MASK);
-    esp_zb_set_tx_power(8);
+    // esp_zb_set_tx_power(8);
 
     /* Basic config variables */
     uint8_t zcl_ver = 3;
@@ -187,23 +201,6 @@ static void esp_zb_task(void *pvParameters)
     esp_zb_stack_main_loop();
 }
 
-static void xiao_rf_switch_init(bool use_external_uFL)
-{
-    gpio_config_t io = {
-        .pin_bit_mask = (1ULL << XIAO_RF_EN_GPIO) | (1ULL << XIAO_RF_ANT_GPIO),
-        .mode = GPIO_MODE_OUTPUT,
-        .pull_up_en = GPIO_PULLUP_DISABLE,
-        .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        .intr_type = GPIO_INTR_DISABLE,
-    };
-    gpio_config(&io);
-
-    gpio_set_level(XIAO_RF_EN_GPIO, 0);
-    vTaskDelay(pdMS_TO_TICKS(2));
-
-    gpio_set_level(XIAO_RF_ANT_GPIO, use_external_uFL ? 1 : 0);
-}
-
 static void zb_set_occupancy(bool beam_broken) {
     uint8_t v = beam_broken ? 1 : 0;
     esp_zb_lock_acquire(portMAX_DELAY);
@@ -246,14 +243,16 @@ static void temp_task(void *arg) {
 
 void app_main(void)
 {
-    xiao_rf_switch_init(false);
     esp_zb_platform_config_t config = {
         .radio_config = ESP_ZB_DEFAULT_RADIO_CONFIG(),
         .host_config = ESP_ZB_DEFAULT_HOST_CONFIG(),
     };
     ESP_ERROR_CHECK(nvs_flash_init());
     ESP_ERROR_CHECK(esp_zb_platform_config(&config));
-    led_driver_init(LED_DEFAULT_OFF);
+
+    g_led = led_driver_create();
+    led_driver_set(g_led, LED_MODE_OFF, LED_COLOR_GREEN);
+
     gate_driver_init(GATE_CLOSE);
     beam_sensor_driver_init();
     temp_driver_init();

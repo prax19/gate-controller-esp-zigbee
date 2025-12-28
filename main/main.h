@@ -4,9 +4,6 @@
 #include "beam_sensor_driver.h"
 #include "temp_sensor_driver.h"
 
-#define XIAO_RF_EN_GPIO     GPIO_NUM_3
-#define XIAO_RF_ANT_GPIO    GPIO_NUM_14
-
 /* Zigbee configuration */
 #define INSTALLCODE_POLICY_ENABLE       false   /* enable the install code policy for security */
 #define ED_AGING_TIMEOUT                ESP_ZB_ED_AGING_TIMEOUT_64MIN
