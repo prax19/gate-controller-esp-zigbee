@@ -1,3 +1,5 @@
+#pragma once
+#include <stdint.h>
 #include <stdbool.h>
 #include "driver/gpio.h"
 
@@ -5,22 +7,20 @@
 extern "C" {
 #endif
 
-#define SIGNAL_PEDESTRIAN_PIN     GPIO_NUM_18
-#define SIGNAL_SEQUENCE_PIN       GPIO_NUM_19
-#define SIGNAL_OPEN_PIN           GPIO_NUM_20
-#define SIGNAL_CLOSE_PIN          GPIO_NUM_21
-
-#define SIGNAL_DURATION           200
+typedef struct gate_driver gate_driver_t;
 
 typedef enum {
-    GATE_OPEN,
+    GATE_OPEN = 0,
     GATE_CLOSE,
     GATE_PEDESTRIAN,
     GATE_SEQ_OPEN,
-} gate_cmd;
+} gate_cmd_t;
 
-void gate_driver_init();
-void call_gate_cmd(gate_cmd state);
+gate_driver_t* gate_driver_create(void);
+
+void gate_driver_destroy(gate_driver_t* d);
+
+void gate_driver_command(gate_driver_t* d, gate_cmd_t cmd);
 
 #ifdef __cplusplus
 }

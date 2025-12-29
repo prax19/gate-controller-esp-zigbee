@@ -15,8 +15,15 @@
 static const char *TAG = "ESP_ZB_GATE_CONTROLLER";
 /********************* Define functions **************************/
 
+typedef struct {
+    bool occupied;
+} occ_evt_t;
+
+static QueueHandle_t s_occ_q;
 
 led_driver_t *g_led = NULL; // LED handler
+gate_driver_t *gate = NULL; // Gate handler
+beam_sensor_driver_t *beam = NULL; // Beam sensor handler
 
 void schedule_network_steering() {
     ESP_LOGI(TAG, "Start secondary network steering");
@@ -106,8 +113,8 @@ static esp_err_t zb_attribute_handler(const esp_zb_zcl_set_attr_value_message_t 
             if (message->attribute.id == ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID && message->attribute.data.type == ESP_ZB_ZCL_ATTR_TYPE_BOOL) {
                 light_state = message->attribute.data.value ? *(bool *)message->attribute.data.value : light_state;
                 ESP_LOGI(TAG, "Light sets to %s", light_state ? "On" : "Off");
-                call_gate_cmd(light_state ? GATE_OPEN: GATE_CLOSE);
-                led_driver_blink_once(g_led, LED_COLOR_GREEN);
+                gate_driver_command(gate, light_state ? GATE_OPEN : GATE_CLOSE);
+                led_driver_blink_once(g_led, light_state ? LED_COLOR_GREEN : LED_COLOR_RED);
             }
         }
     }
@@ -201,34 +208,6 @@ static void esp_zb_task(void *pvParameters)
     esp_zb_stack_main_loop();
 }
 
-static void zb_set_occupancy(bool beam_broken) {
-    uint8_t v = beam_broken ? 1 : 0;
-    esp_zb_lock_acquire(portMAX_DELAY);
-    esp_zb_zcl_set_attribute_val(HA_ESP_GATE_ENDPOINT,
-        ESP_ZB_ZCL_CLUSTER_ID_OCCUPANCY_SENSING,
-        ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
-        ESP_ZB_ZCL_ATTR_OCCUPANCY_SENSING_OCCUPANCY_ID,
-        &v, false);
-    esp_zb_lock_release();
-}
-
-static void beam_task(void *arg) {
-    bool last = beam_read();
-    zb_set_occupancy(last);
-
-    for (;;) {
-        vTaskDelay(pdMS_TO_TICKS(100));
-        bool cur = beam_read();
-        if (cur != last) {
-            cur = beam_read();
-            if (cur != last) {
-                last = cur;
-                zb_set_occupancy(cur);
-            }
-        }
-    }
-}
-
 static void temp_task(void *arg) {
     for (;;) {
         float t = read_temperature();
@@ -241,8 +220,30 @@ static void temp_task(void *arg) {
     }
 }
 
+static void zb_update_occupancy(void *param)
+{
+    uint8_t v = (uint8_t)((uintptr_t)param ? 1 : 0);
+
+    esp_zb_zcl_set_attribute_val(HA_ESP_GATE_ENDPOINT,
+                                 ESP_ZB_ZCL_CLUSTER_ID_OCCUPANCY_SENSING,
+                                 ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+                                 ESP_ZB_ZCL_ATTR_OCCUPANCY_SENSING_OCCUPANCY_ID,
+                                 &v, false);
+    ESP_LOGI(TAG, "Occupancy updated to: %s", v ? "occupied" : "unoccupied");
+    led_driver_set(g_led, v ? LED_MODE_BLINK : LED_MODE_OFF, LED_COLOR_RED);
+}
+
+static void beam_cb(bool occupied, void *user_ctx)
+{
+    (void)user_ctx;
+    esp_zb_scheduler_user_alarm(zb_update_occupancy, (void*)(uintptr_t)occupied, 0);
+    
+}
+
 void app_main(void)
 {
+    s_occ_q = xQueueCreate(4, sizeof(occ_evt_t));
+
     esp_zb_platform_config_t config = {
         .radio_config = ESP_ZB_DEFAULT_RADIO_CONFIG(),
         .host_config = ESP_ZB_DEFAULT_HOST_CONFIG(),
@@ -251,12 +252,10 @@ void app_main(void)
     ESP_ERROR_CHECK(esp_zb_platform_config(&config));
 
     g_led = led_driver_create();
-    led_driver_set(g_led, LED_MODE_OFF, LED_COLOR_GREEN);
+    gate = gate_driver_create();
+    beam = beam_sensor_driver_create(beam_cb, NULL);
 
-    gate_driver_init(GATE_CLOSE);
-    beam_sensor_driver_init();
     temp_driver_init();
     xTaskCreate(esp_zb_task, "Zigbee_main", 4096, NULL, 5, NULL);
-    xTaskCreate(beam_task, "beam", 3072, NULL, 6, NULL);
     xTaskCreate(temp_task, "temp", 2048, NULL, 2, NULL);
 }

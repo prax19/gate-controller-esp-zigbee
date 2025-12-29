@@ -1,16 +1,20 @@
-#include "driver/gpio.h"
+#pragma once
 #include <stdbool.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#define BEAM_SENSOR_DEFAULT_LOW 1
+typedef struct beam_sensor_driver beam_sensor_driver_t;
 
-#define BEAM_SENSOR_GPIO           GPIO_NUM_22
+typedef void (*beam_sensor_cb_t)(bool occupied, void *user_ctx);
 
-void beam_sensor_driver_init();
-bool beam_read();
+beam_sensor_driver_t* beam_sensor_driver_create(beam_sensor_cb_t cb, void *user_ctx);
+
+void beam_sensor_driver_destroy(beam_sensor_driver_t *d);
+
+bool beam_sensor_driver_get_occupied(beam_sensor_driver_t *d);
 
 #ifdef __cplusplus
 }
