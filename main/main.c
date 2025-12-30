@@ -7,6 +7,8 @@
 #include "main.h"
 #include "driver/gpio.h"
 #include "temp_sensor_driver.h"
+#include "zcl/esp_zigbee_zcl_common.h" 
+#include "zcl/esp_zigbee_zcl_command.h"
 
 #if !defined ZB_ED_ROLE
 #error Define ZB_ED_ROLE in idf.py menuconfig to compile light (End Device) source code.
@@ -24,6 +26,70 @@ static QueueHandle_t s_occ_q;
 led_driver_t *g_led = NULL; // LED handler
 gate_driver_t *gate = NULL; // Gate handler
 beam_sensor_driver_t *beam = NULL; // Beam sensor handler
+temp_sensor_driver_t *temp_sensor = NULL; // Temperature sensor handler
+
+static void zb_update_temperature(void *param)
+{
+    int32_t scaled = (int32_t)(intptr_t)param;
+    int16_t measured = (int16_t)scaled;
+
+    esp_zb_zcl_set_attribute_val(HA_ESP_GATE_ENDPOINT,
+                                 ESP_ZB_ZCL_CLUSTER_ID_TEMP_MEASUREMENT,
+                                 ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+                                 ESP_ZB_ZCL_ATTR_TEMP_MEASUREMENT_VALUE_ID,
+                                 &measured, false);
+
+    ESP_LOGI(TAG, "Temperature updated to: %.2f C", measured / 100.0f);
+}
+
+static void temp_cb(float temp_c, void *user_ctx)
+{
+    (void)user_ctx;
+
+    int32_t scaled = (int32_t)lroundf(temp_c * 100.0f);
+    if (scaled > INT16_MAX) scaled = INT16_MAX;
+    if (scaled < INT16_MIN) scaled = INT16_MIN;
+
+    esp_zb_scheduler_user_alarm(zb_update_temperature,
+                               (void*)(intptr_t)scaled,
+                               0);
+}
+
+
+static void zb_update_occupancy(void *param)
+{
+    uint8_t v = (uint8_t)((uintptr_t)param ? 1 : 0);
+
+    esp_zb_zcl_set_attribute_val(HA_ESP_GATE_ENDPOINT,
+                                 ESP_ZB_ZCL_CLUSTER_ID_OCCUPANCY_SENSING,
+                                 ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+                                 ESP_ZB_ZCL_ATTR_OCCUPANCY_SENSING_OCCUPANCY_ID,
+                                 &v, false);
+    ESP_LOGI(TAG, "Occupancy updated to: %s", v ? "occupied" : "unoccupied");
+    
+    led_driver_set(g_led, v ? LED_MODE_BLINK : LED_MODE_OFF, LED_COLOR_RED);
+        
+}
+
+static void beam_cb(bool occupied, void *user_ctx)
+{
+    (void)user_ctx;
+    esp_zb_scheduler_user_alarm(zb_update_occupancy, (void*)(uintptr_t)occupied, 0);
+    
+}
+
+static void start_gate_and_beam_if_needed(void)
+{
+    static bool started = false;
+    if (started) return;
+    started = true;
+
+    gate = gate_driver_create();
+    beam = beam_sensor_driver_create(beam_cb, NULL);
+
+    temp_sensor_config_t temp_sensor_config = TEMP_SENSOR_DRIVER_DEFAULT_CONFIG();
+    temp_sensor = temp_sensor_driver_create(&temp_sensor_config, temp_cb, NULL);
+}
 
 void schedule_network_steering() {
     ESP_LOGI(TAG, "Start secondary network steering");
@@ -70,6 +136,7 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
                     extended_pan_id[7], extended_pan_id[6], extended_pan_id[5], extended_pan_id[4],
                     extended_pan_id[3], extended_pan_id[2], extended_pan_id[1], extended_pan_id[0],
                     esp_zb_get_pan_id(), esp_zb_get_current_channel(), esp_zb_get_short_address());
+                    start_gate_and_beam_if_needed();
                     led_driver_set(g_led, LED_MODE_ON, LED_COLOR_GREEN);
                     led_driver_sleep(g_led, 5000);
         } else {
@@ -182,6 +249,27 @@ static void esp_zb_task(void *pvParameters)
     };
     esp_zb_attribute_list_t *occupancy_sensor_srv = esp_zb_occupancy_sensing_cluster_create(&occupancy_cfg);
 
+    // Device temperature
+    // esp_zb_device_temp_config_cluster_cfg_t temp_cfg = {
+    //     .current_temperature = ESP_ZB_ZCL_DEVICE_TEMP_CONFIG_CURRENT_TEMP_DEFAULT_VALUE
+    // };
+    // esp_zb_attribute_list_t *device_temp_srv = esp_zb_device_temp_config_cluster_create(&temp_cfg);
+
+    // Temperature Measurement (server) - cluster 0x0402
+    static int16_t s_temp_measured = ESP_ZB_ZCL_TEMP_MEASUREMENT_MEASURED_VALUE_DEFAULT;
+    static int16_t s_temp_min      = ESP_ZB_ZCL_TEMP_MEASUREMENT_MIN_MEASURED_VALUE_DEFAULT;
+    static int16_t s_temp_max      = ESP_ZB_ZCL_TEMP_MEASUREMENT_MAX_MEASURED_VALUE_DEFAULT;
+
+    esp_zb_attribute_list_t *temp_meas_srv =
+        esp_zb_zcl_attr_list_create(ESP_ZB_ZCL_CLUSTER_ID_TEMP_MEASUREMENT);
+
+    esp_zb_temperature_meas_cluster_add_attr(temp_meas_srv,
+        ESP_ZB_ZCL_ATTR_TEMP_MEASUREMENT_VALUE_ID, &s_temp_measured);
+    esp_zb_temperature_meas_cluster_add_attr(temp_meas_srv,
+        ESP_ZB_ZCL_ATTR_TEMP_MEASUREMENT_MIN_VALUE_ID, &s_temp_min);
+    esp_zb_temperature_meas_cluster_add_attr(temp_meas_srv,
+        ESP_ZB_ZCL_ATTR_TEMP_MEASUREMENT_MAX_VALUE_ID, &s_temp_max);
+
     /* Joining cluster lists */
     esp_zb_cluster_list_t *clist = esp_zb_zcl_cluster_list_create();
     esp_zb_cluster_list_add_basic_cluster( clist, basic,        ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
@@ -190,6 +278,8 @@ static void esp_zb_task(void *pvParameters)
     esp_zb_cluster_list_add_scenes_cluster( clist, scenes_srv,  ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
     esp_zb_cluster_list_add_on_off_cluster( clist, onoff_srv,   ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
     esp_zb_cluster_list_add_occupancy_sensing_cluster( clist, occupancy_sensor_srv,   ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
+    // esp_zb_cluster_list_add_device_temp_config_cluster( clist, device_temp_srv,   ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
+    esp_zb_cluster_list_add_temperature_meas_cluster(clist, temp_meas_srv, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
 
     /* Device and endpoint registering */
     esp_zb_ep_list_t *eplist = esp_zb_ep_list_create();
@@ -208,38 +298,6 @@ static void esp_zb_task(void *pvParameters)
     esp_zb_stack_main_loop();
 }
 
-static void temp_task(void *arg) {
-    for (;;) {
-        float t = read_temperature();
-        if(!isnan(t)) {
-            ESP_LOGI(TAG, "Temperature: %.2f C", t);
-        } else {
-            ESP_LOGW(TAG, "Failed to read temperature");
-        }
-        vTaskDelay(pdMS_TO_TICKS(8000));
-    }
-}
-
-static void zb_update_occupancy(void *param)
-{
-    uint8_t v = (uint8_t)((uintptr_t)param ? 1 : 0);
-
-    esp_zb_zcl_set_attribute_val(HA_ESP_GATE_ENDPOINT,
-                                 ESP_ZB_ZCL_CLUSTER_ID_OCCUPANCY_SENSING,
-                                 ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
-                                 ESP_ZB_ZCL_ATTR_OCCUPANCY_SENSING_OCCUPANCY_ID,
-                                 &v, false);
-    ESP_LOGI(TAG, "Occupancy updated to: %s", v ? "occupied" : "unoccupied");
-    led_driver_set(g_led, v ? LED_MODE_BLINK : LED_MODE_OFF, LED_COLOR_RED);
-}
-
-static void beam_cb(bool occupied, void *user_ctx)
-{
-    (void)user_ctx;
-    esp_zb_scheduler_user_alarm(zb_update_occupancy, (void*)(uintptr_t)occupied, 0);
-    
-}
-
 void app_main(void)
 {
     s_occ_q = xQueueCreate(4, sizeof(occ_evt_t));
@@ -252,10 +310,6 @@ void app_main(void)
     ESP_ERROR_CHECK(esp_zb_platform_config(&config));
 
     g_led = led_driver_create();
-    gate = gate_driver_create();
-    beam = beam_sensor_driver_create(beam_cb, NULL);
 
-    temp_driver_init();
     xTaskCreate(esp_zb_task, "Zigbee_main", 4096, NULL, 5, NULL);
-    xTaskCreate(temp_task, "temp", 2048, NULL, 2, NULL);
 }

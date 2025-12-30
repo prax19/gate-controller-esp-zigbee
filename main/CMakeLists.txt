@@ -7,4 +7,5 @@ idf_component_register(
         "temp_sensor_driver.c"
     INCLUDE_DIRS "."
     PRIV_REQUIRES nvs_flash esp_driver_uart ieee802154
+    REQUIRES esp_timer
 )
