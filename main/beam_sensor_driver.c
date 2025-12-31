@@ -13,7 +13,7 @@
 
 #define BEAM_SENSOR_DEFAULT_LOW     1
 
-#define BEAM_SENSOR_FILTER_MS       200
+#define BEAM_SENSOR_FILTER_DEFAULT_MS  200
 
 #define BEAM_SENSOR_POLL_MS         20
 
@@ -35,6 +35,8 @@ struct beam_sensor_driver {
     bool pending_active;
     bool pending_value;
     TickType_t pending_since;
+
+    volatile TickType_t filter_ticks;
 };
 
 static inline bool raw_to_occupied(int raw_level)
@@ -89,7 +91,6 @@ static void beam_task(void *arg)
         }
 
         TickType_t now = xTaskGetTickCount();
-
         if (!d->pending_active || d->pending_value != raw_occ) {
             d->pending_active = true;
             d->pending_value = raw_occ;
@@ -97,7 +98,8 @@ static void beam_task(void *arg)
             continue;
         }
 
-        if ((now - d->pending_since) >= pdMS_TO_TICKS(BEAM_SENSOR_FILTER_MS)) {
+        TickType_t filter = d->filter_ticks;
+        if ((now - d->pending_since) >= filter) {
             d->pending_active = false;
             d->stable = raw;
             maybe_publish(d, raw_occ);
@@ -115,6 +117,9 @@ beam_sensor_driver_t* beam_sensor_driver_create(beam_sensor_cb_t cb, void *user_
 
     d->cb = cb;
     d->cb_ctx = user_ctx;
+
+    d->filter_ticks = pdMS_TO_TICKS(BEAM_SENSOR_FILTER_DEFAULT_MS);
+    if (d->filter_ticks == 0) d->filter_ticks = 1;
 
     d->done = xSemaphoreCreateBinary();
     if (!d->done) {
@@ -148,4 +153,14 @@ bool beam_sensor_driver_get_occupied(beam_sensor_driver_t *handle)
     struct beam_sensor_driver *d = (struct beam_sensor_driver*)handle;
     if (!d) return false;
     return d->occupied;
+}
+
+void beam_sensor_driver_set_filter_ms(beam_sensor_driver_t *handle, uint32_t filter_ms)
+{
+    struct beam_sensor_driver *d = (struct beam_sensor_driver*)handle;
+    if (!d) return;
+
+    TickType_t t = pdMS_TO_TICKS(filter_ms);
+    if (t == 0) t = 1;
+    d->filter_ticks = t;
 }

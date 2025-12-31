@@ -16,6 +16,9 @@ void beam_sensor_driver_destroy(beam_sensor_driver_t *d);
 
 bool beam_sensor_driver_get_occupied(beam_sensor_driver_t *d);
 
+void beam_sensor_driver_set_filter_ms(beam_sensor_driver_t *handle, uint32_t filter_ms);
+
+
 #ifdef __cplusplus
 }
 #endif

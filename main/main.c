@@ -2,6 +2,7 @@
 #include "freertos/task.h"
 #include "esp_check.h"
 #include "esp_log.h"
+#include "nvs.h"
 #include "nvs_flash.h"
 #include "ha/esp_zigbee_ha_standard.h"
 #include "main.h"
@@ -9,13 +10,21 @@
 #include "temp_sensor_driver.h"
 #include "zcl/esp_zigbee_zcl_common.h" 
 #include "zcl/esp_zigbee_zcl_command.h"
+#include "nvs_wrapper.h"
 
 #if !defined ZB_ED_ROLE
 #error Define ZB_ED_ROLE in idf.py menuconfig to compile light (End Device) source code.
 #endif
 
 static const char *TAG = "ESP_ZB_GATE_CONTROLLER";
-/********************* Define functions **************************/
+
+// Zigbee parameters
+#define GATE_CFG_CLUSTER_ID              0xFF00
+// #define GATE_CFG_ATTR_TRANSITION_DS      0x0000 
+#define GATE_CFG_ATTR_BEAM_DEBOUNCE_MS   0x0001
+
+// static uint16_t s_transition_ds;
+static uint16_t s_beam_debounce_ms;
 
 typedef struct {
     bool occupied;
@@ -23,10 +32,31 @@ typedef struct {
 
 static QueueHandle_t s_occ_q;
 
+// Drivers
 led_driver_t *g_led = NULL; // LED handler
 gate_driver_t *gate = NULL; // Gate handler
 beam_sensor_driver_t *beam = NULL; // Beam sensor handler
 temp_sensor_driver_t *temp_sensor = NULL; // Temperature sensor handler
+
+static void zb_report_beam_debounce(void *param)
+{
+    (void)param;
+
+    esp_zb_zcl_report_attr_cmd_t report_attr_cmd = {0};
+    report_attr_cmd.zcl_basic_cmd.dst_addr_u.addr_short = COORDINATOR_ADDR;
+    report_attr_cmd.zcl_basic_cmd.src_endpoint = HA_ESP_GATE_ENDPOINT; // u Ciebie EP=10
+    report_attr_cmd.zcl_basic_cmd.dst_endpoint = COORDINATOR_EP;
+
+    report_attr_cmd.address_mode = ESP_ZB_APS_ADDR_MODE_16_ENDP_PRESENT;
+    report_attr_cmd.direction = ESP_ZB_ZCL_CMD_DIRECTION_TO_CLI;
+
+    report_attr_cmd.clusterID   = GATE_CFG_CLUSTER_ID;
+    report_attr_cmd.attributeID = GATE_CFG_ATTR_BEAM_DEBOUNCE_MS;
+
+    ESP_LOGI(TAG, "Reporting beam_debounce_ms=%u", s_beam_debounce_ms);
+
+    esp_zb_zcl_report_attr_cmd_req(&report_attr_cmd);
+}
 
 static void zb_update_temperature(void *param)
 {
@@ -86,6 +116,7 @@ static void start_gate_and_beam_if_needed(void)
 
     gate = gate_driver_create();
     beam = beam_sensor_driver_create(beam_cb, NULL);
+    beam_sensor_driver_set_filter_ms(beam, s_beam_debounce_ms);
 
     temp_sensor_config_t temp_sensor_config = TEMP_SENSOR_DRIVER_DEFAULT_CONFIG();
     temp_sensor = temp_sensor_driver_create(&temp_sensor_config, temp_cb, NULL);
@@ -137,6 +168,7 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
                     extended_pan_id[3], extended_pan_id[2], extended_pan_id[1], extended_pan_id[0],
                     esp_zb_get_pan_id(), esp_zb_get_current_channel(), esp_zb_get_short_address());
                     start_gate_and_beam_if_needed();
+                    esp_zb_scheduler_user_alarm(zb_report_beam_debounce, NULL, 3000);
                     led_driver_set(g_led, LED_MODE_ON, LED_COLOR_GREEN);
                     led_driver_sleep(g_led, 5000);
         } else {
@@ -183,6 +215,22 @@ static esp_err_t zb_attribute_handler(const esp_zb_zcl_set_attr_value_message_t 
                 gate_driver_command(gate, light_state ? GATE_OPEN : GATE_CLOSE);
                 led_driver_blink_once(g_led, light_state ? LED_COLOR_GREEN : LED_COLOR_RED);
             }
+        }
+    }
+    if (message->info.dst_endpoint == HA_ESP_GATE_ENDPOINT &&
+        message->info.cluster == GATE_CFG_CLUSTER_ID &&
+        message->attribute.data.value)
+    {
+        if (message->attribute.id == GATE_CFG_ATTR_BEAM_DEBOUNCE_MS &&
+            message->attribute.data.type == ESP_ZB_ZCL_ATTR_TYPE_U16)
+        {
+            uint16_t db = *(uint16_t*)message->attribute.data.value;
+            s_beam_debounce_ms = db;
+            cfg_nvs_set_u16("beam_debounce", db);
+
+            beam_sensor_driver_set_filter_ms(beam, db);
+
+            ESP_LOGI(TAG, "Beam debounce set to %dms", db);
         }
     }
     return ret;
@@ -270,6 +318,27 @@ static void esp_zb_task(void *pvParameters)
     esp_zb_temperature_meas_cluster_add_attr(temp_meas_srv,
         ESP_ZB_ZCL_ATTR_TEMP_MEASUREMENT_MAX_VALUE_ID, &s_temp_max);
 
+    // Experimental features
+
+    esp_zb_attribute_list_t *gate_cfg_srv =
+        esp_zb_zcl_attr_list_create(GATE_CFG_CLUSTER_ID);
+
+    // esp_zb_custom_cluster_add_custom_attr(
+    //     gate_cfg_srv,
+    //     GATE_CFG_ATTR_TRANSITION_DS,
+    //     ESP_ZB_ZCL_ATTR_TYPE_U16,
+    //     ESP_ZB_ZCL_ATTR_ACCESS_READ_WRITE | ESP_ZB_ZCL_ATTR_ACCESS_REPORTING,
+    //     &s_gate_transition_ds
+    // );
+
+    esp_zb_custom_cluster_add_custom_attr(
+        gate_cfg_srv,
+        GATE_CFG_ATTR_BEAM_DEBOUNCE_MS,
+        ESP_ZB_ZCL_ATTR_TYPE_U16,
+        ESP_ZB_ZCL_ATTR_ACCESS_READ_WRITE | ESP_ZB_ZCL_ATTR_ACCESS_REPORTING,
+        &s_beam_debounce_ms
+    );
+    
     /* Joining cluster lists */
     esp_zb_cluster_list_t *clist = esp_zb_zcl_cluster_list_create();
     esp_zb_cluster_list_add_basic_cluster( clist, basic,        ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
@@ -280,6 +349,7 @@ static void esp_zb_task(void *pvParameters)
     esp_zb_cluster_list_add_occupancy_sensing_cluster( clist, occupancy_sensor_srv,   ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
     // esp_zb_cluster_list_add_device_temp_config_cluster( clist, device_temp_srv,   ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
     esp_zb_cluster_list_add_temperature_meas_cluster(clist, temp_meas_srv, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
+    esp_zb_cluster_list_add_custom_cluster(clist, gate_cfg_srv, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
 
     /* Device and endpoint registering */
     esp_zb_ep_list_t *eplist = esp_zb_ep_list_create();
@@ -310,6 +380,8 @@ void app_main(void)
     ESP_ERROR_CHECK(esp_zb_platform_config(&config));
 
     g_led = led_driver_create();
+
+    s_beam_debounce_ms = cfg_nvs_get_u16_def("beam_debounce", 200);
 
     xTaskCreate(esp_zb_task, "Zigbee_main", 4096, NULL, 5, NULL);
 }

@@ -11,6 +11,8 @@
 #define ED_NETWORK_STEERING_RETRY_TIME  10000
 #define HA_ESP_GATE_ENDPOINT            10      /* esp gate controller endpoint, used to process gate controlling commands */
 #define ESP_ZB_PRIMARY_CHANNEL_MASK     ESP_ZB_TRANSCEIVER_ALL_CHANNELS_MASK  /* Zigbee primary channel mask use in the example */
+#define COORDINATOR_ADDR 0x0000 
+#define COORDINATOR_EP 1
 
 #define ESP_MANUFACTURER_NAME "\x06""prax19"      /* Customized manufacturer name */
 #define ESP_MODEL_IDENTIFIER "\x0B""Retrofit GC" /* Customized model identifier */
