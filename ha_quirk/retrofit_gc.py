@@ -5,6 +5,8 @@ from zigpy.quirks.v2 import QuirkBuilder
 from zigpy.quirks.v2.homeassistant import EntityType, UnitOfTime
 from zigpy.zcl.foundation import BaseAttributeDefs, ZCLAttributeDef
 from zigpy.zcl import foundation
+from zigpy.zcl.clusters.measurement import TemperatureMeasurement
+from zigpy.quirks.v2.homeassistant.sensor import SensorDeviceClass, SensorStateClass
 
 from zhaquirks import CustomCluster
 
@@ -62,6 +64,18 @@ class GateConfigCluster(CustomCluster):
         mode="box",
         entity_type=EntityType.CONFIG,
         fallback_name="Debounce fotokomórki (ms)",
+    )
+    .sensor(
+        attribute_name=TemperatureMeasurement.AttributeDefs.measured_value.name,
+        cluster_id=TemperatureMeasurement.cluster_id,
+        endpoint_id=EP,
+        device_class=SensorDeviceClass.TEMPERATURE,
+        state_class=SensorStateClass.MEASUREMENT,
+        unit="°C",
+        multiplier=0.01,
+        entity_type=EntityType.DIAGNOSTIC,
+        fallback_name="Temperatura urządzenia",
+        # initially_disabled=True,
     )
 
     .add_to_registry()

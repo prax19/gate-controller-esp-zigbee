@@ -2,7 +2,6 @@
 #include "freertos/task.h"
 #include "esp_check.h"
 #include "esp_log.h"
-#include "nvs.h"
 #include "nvs_flash.h"
 #include "ha/esp_zigbee_ha_standard.h"
 #include "main.h"
@@ -10,6 +9,7 @@
 #include "temp_sensor_driver.h"
 #include "zcl/esp_zigbee_zcl_common.h" 
 #include "zcl/esp_zigbee_zcl_command.h"
+#include "zcl/esp_zigbee_zcl_window_covering.h"
 #include "nvs_wrapper.h"
 
 #if !defined ZB_ED_ROLE
@@ -25,38 +25,13 @@ static const char *TAG = "ESP_ZB_GATE_CONTROLLER";
 
 // static uint16_t s_transition_ds;
 static uint16_t s_beam_debounce_ms;
-
-typedef struct {
-    bool occupied;
-} occ_evt_t;
-
-static QueueHandle_t s_occ_q;
+static uint8_t s_lift_pct = 100; 
 
 // Drivers
 led_driver_t *g_led = NULL; // LED handler
 gate_driver_t *gate = NULL; // Gate handler
 beam_sensor_driver_t *beam = NULL; // Beam sensor handler
 temp_sensor_driver_t *temp_sensor = NULL; // Temperature sensor handler
-
-static void zb_report_beam_debounce(void *param)
-{
-    (void)param;
-
-    esp_zb_zcl_report_attr_cmd_t report_attr_cmd = {0};
-    report_attr_cmd.zcl_basic_cmd.dst_addr_u.addr_short = COORDINATOR_ADDR;
-    report_attr_cmd.zcl_basic_cmd.src_endpoint = HA_ESP_GATE_ENDPOINT; // u Ciebie EP=10
-    report_attr_cmd.zcl_basic_cmd.dst_endpoint = COORDINATOR_EP;
-
-    report_attr_cmd.address_mode = ESP_ZB_APS_ADDR_MODE_16_ENDP_PRESENT;
-    report_attr_cmd.direction = ESP_ZB_ZCL_CMD_DIRECTION_TO_CLI;
-
-    report_attr_cmd.clusterID   = GATE_CFG_CLUSTER_ID;
-    report_attr_cmd.attributeID = GATE_CFG_ATTR_BEAM_DEBOUNCE_MS;
-
-    ESP_LOGI(TAG, "Reporting beam_debounce_ms=%u", s_beam_debounce_ms);
-
-    esp_zb_zcl_report_attr_cmd_req(&report_attr_cmd);
-}
 
 static void zb_update_temperature(void *param)
 {
@@ -85,7 +60,6 @@ static void temp_cb(float temp_c, void *user_ctx)
                                0);
 }
 
-
 static void zb_update_occupancy(void *param)
 {
     uint8_t v = (uint8_t)((uintptr_t)param ? 1 : 0);
@@ -106,6 +80,83 @@ static void beam_cb(bool occupied, void *user_ctx)
     (void)user_ctx;
     esp_zb_scheduler_user_alarm(zb_update_occupancy, (void*)(uintptr_t)occupied, 0);
     
+}
+
+static inline void zb_report_attr_u16(uint16_t cluster_id, uint16_t attr_id)
+{
+    esp_zb_zcl_report_attr_cmd_t r = {0};
+    r.zcl_basic_cmd.dst_addr_u.addr_short = COORDINATOR_ADDR;
+    r.zcl_basic_cmd.src_endpoint = HA_ESP_GATE_ENDPOINT;
+    r.zcl_basic_cmd.dst_endpoint = COORDINATOR_EP;
+    r.address_mode = ESP_ZB_APS_ADDR_MODE_16_ENDP_PRESENT;
+    r.direction    = ESP_ZB_ZCL_CMD_DIRECTION_TO_CLI;
+    r.clusterID    = cluster_id;
+    r.attributeID  = attr_id;
+    esp_zb_zcl_report_attr_cmd_req(&r);
+}
+
+static void zb_report_beam_debounce(void *param)
+{
+    (void)param;
+    ESP_LOGI(TAG, "Reporting beam_debounce_ms=%u", s_beam_debounce_ms);
+    zb_report_attr_u16(GATE_CFG_CLUSTER_ID, GATE_CFG_ATTR_BEAM_DEBOUNCE_MS);
+}
+
+static void wc_set_lift_pct(uint8_t pct_closed)
+{
+    s_lift_pct = pct_closed;
+    esp_zb_zcl_set_attribute_val(HA_ESP_GATE_ENDPOINT,
+        ESP_ZB_ZCL_CLUSTER_ID_WINDOW_COVERING,
+        ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+        ESP_ZB_ZCL_ATTR_WINDOW_COVERING_CURRENT_POSITION_LIFT_PERCENTAGE_ID,
+        &s_lift_pct, false);
+
+    zb_report_attr_u16(ESP_ZB_ZCL_CLUSTER_ID_WINDOW_COVERING,
+        ESP_ZB_ZCL_ATTR_WINDOW_COVERING_CURRENT_POSITION_LIFT_PERCENTAGE_ID);
+}
+
+
+static esp_err_t zb_window_covering_movement_handler(const esp_zb_zcl_window_covering_movement_message_t *m)
+{
+    ESP_RETURN_ON_FALSE(m, ESP_FAIL, TAG, "Empty window covering message");
+    ESP_RETURN_ON_FALSE(m->info.status == ESP_ZB_ZCL_STATUS_SUCCESS,
+                        ESP_ERR_INVALID_ARG, TAG, "WC cmd error status(%d)", m->info.status);
+
+    if (!gate) {
+        ESP_LOGW(TAG, "WC cmd received but gate driver not started yet");
+        return ESP_OK;
+    }
+
+    switch (m->command) {
+
+    case ESP_ZB_ZCL_CMD_WINDOW_COVERING_UP_OPEN:
+        ESP_LOGI(TAG, "GATE_OPEN");
+        gate_driver_command(gate, GATE_OPEN);
+        wc_set_lift_pct(0);     // 0 = OPEN
+        led_driver_blink_once(g_led, LED_COLOR_GREEN);
+        break;
+
+    case ESP_ZB_ZCL_CMD_WINDOW_COVERING_DOWN_CLOSE:
+        ESP_LOGI(TAG, "GATE_CLOSE");
+        gate_driver_command(gate, GATE_CLOSE);
+        wc_set_lift_pct(100);
+        led_driver_blink_once(g_led, LED_COLOR_RED);
+        break;
+
+    case ESP_ZB_ZCL_CMD_WINDOW_COVERING_STOP:
+        ESP_LOGI(TAG, "GATE_STOP");
+        break;
+
+    case ESP_ZB_ZCL_CMD_WINDOW_COVERING_GO_TO_LIFT_PERCENTAGE:
+        ESP_LOGI(TAG, "GO_TO_LIFT_PERCENTAGE");
+        break;
+
+    default:
+        ESP_LOGW(TAG, "unknown cmd=0x%04x", (unsigned)m->command);
+        break;
+    }
+
+    return ESP_OK;
 }
 
 static void start_gate_and_beam_if_needed(void)
@@ -200,7 +251,6 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
 static esp_err_t zb_attribute_handler(const esp_zb_zcl_set_attr_value_message_t *message)
 {
     esp_err_t ret = ESP_OK;
-    bool light_state = false;
 
     ESP_RETURN_ON_FALSE(message, ESP_FAIL, TAG, "Empty message");
     ESP_RETURN_ON_FALSE(message->info.status == ESP_ZB_ZCL_STATUS_SUCCESS, ESP_ERR_INVALID_ARG, TAG, "Received message: error status(%d)",
@@ -208,14 +258,7 @@ static esp_err_t zb_attribute_handler(const esp_zb_zcl_set_attr_value_message_t 
     ESP_LOGI(TAG, "Received message: endpoint(%d), cluster(0x%x), attribute(0x%x), data size(%d)", message->info.dst_endpoint, message->info.cluster,
              message->attribute.id, message->attribute.data.size);
     if (message->info.dst_endpoint == HA_ESP_GATE_ENDPOINT) {
-        if (message->info.cluster == ESP_ZB_ZCL_CLUSTER_ID_ON_OFF) {
-            if (message->attribute.id == ESP_ZB_ZCL_ATTR_ON_OFF_ON_OFF_ID && message->attribute.data.type == ESP_ZB_ZCL_ATTR_TYPE_BOOL) {
-                light_state = message->attribute.data.value ? *(bool *)message->attribute.data.value : light_state;
-                ESP_LOGI(TAG, "Light sets to %s", light_state ? "On" : "Off");
-                gate_driver_command(gate, light_state ? GATE_OPEN : GATE_CLOSE);
-                led_driver_blink_once(g_led, light_state ? LED_COLOR_GREEN : LED_COLOR_RED);
-            }
-        }
+
     }
     if (message->info.dst_endpoint == HA_ESP_GATE_ENDPOINT &&
         message->info.cluster == GATE_CFG_CLUSTER_ID &&
@@ -227,8 +270,9 @@ static esp_err_t zb_attribute_handler(const esp_zb_zcl_set_attr_value_message_t 
             uint16_t db = *(uint16_t*)message->attribute.data.value;
             s_beam_debounce_ms = db;
             cfg_nvs_set_u16("beam_debounce", db);
-
-            beam_sensor_driver_set_filter_ms(beam, db);
+            if(beam) {
+                beam_sensor_driver_set_filter_ms(beam, db);
+            }
 
             ESP_LOGI(TAG, "Beam debounce set to %dms", db);
         }
@@ -242,6 +286,9 @@ static esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id,
     switch (callback_id) {
     case ESP_ZB_CORE_SET_ATTR_VALUE_CB_ID:
         ret = zb_attribute_handler((esp_zb_zcl_set_attr_value_message_t *)message);
+        break;
+    case ESP_ZB_CORE_WINDOW_COVERING_MOVEMENT_CB_ID:
+        ret = zb_window_covering_movement_handler((esp_zb_zcl_window_covering_movement_message_t *)message);
         break;
     default:
         ESP_LOGW(TAG, "Receive Zigbee action(0x%x) callback", callback_id);
@@ -283,11 +330,14 @@ static void esp_zb_task(void *pvParameters)
     // SCENES (server)
     esp_zb_attribute_list_t *scenes_srv = esp_zb_scenes_cluster_create(NULL);
 
-    // ON/OFF (server)
-    esp_zb_on_off_cluster_cfg_t onoff_cfg = {
-        .on_off = ESP_ZB_ZCL_ON_OFF_ON_OFF_DEFAULT_VALUE
-    };
-    esp_zb_attribute_list_t *onoff_srv = esp_zb_on_off_cluster_create(&onoff_cfg);
+    // Window Covering (server)
+    esp_zb_attribute_list_t *wc_srv = esp_zb_zcl_attr_list_create(ESP_ZB_ZCL_CLUSTER_ID_WINDOW_COVERING);
+
+    esp_zb_window_covering_cluster_add_attr(
+        wc_srv,
+        ESP_ZB_ZCL_ATTR_WINDOW_COVERING_CURRENT_POSITION_LIFT_PERCENTAGE_ID,
+        &s_lift_pct
+);
 
     // Occupancy sensor (server)
     esp_zb_occupancy_sensing_cluster_cfg_t occupancy_cfg = {
@@ -345,7 +395,7 @@ static void esp_zb_task(void *pvParameters)
     esp_zb_cluster_list_add_identify_cluster(clist, identify_srv,ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
     esp_zb_cluster_list_add_groups_cluster( clist, groups_srv,  ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
     esp_zb_cluster_list_add_scenes_cluster( clist, scenes_srv,  ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
-    esp_zb_cluster_list_add_on_off_cluster( clist, onoff_srv,   ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
+    esp_zb_cluster_list_add_window_covering_cluster(clist, wc_srv, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
     esp_zb_cluster_list_add_occupancy_sensing_cluster( clist, occupancy_sensor_srv,   ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
     // esp_zb_cluster_list_add_device_temp_config_cluster( clist, device_temp_srv,   ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
     esp_zb_cluster_list_add_temperature_meas_cluster(clist, temp_meas_srv, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
@@ -356,7 +406,7 @@ static void esp_zb_task(void *pvParameters)
     esp_zb_endpoint_config_t epcfg = {
         .endpoint          = HA_ESP_GATE_ENDPOINT,
         .app_profile_id    = ESP_ZB_AF_HA_PROFILE_ID,
-        .app_device_id     = ESP_ZB_HA_ON_OFF_OUTPUT_DEVICE_ID,
+        .app_device_id     = ESP_ZB_HA_WINDOW_COVERING_DEVICE_ID,
         .app_device_version= 1,
     };
 
@@ -370,8 +420,6 @@ static void esp_zb_task(void *pvParameters)
 
 void app_main(void)
 {
-    s_occ_q = xQueueCreate(4, sizeof(occ_evt_t));
-
     esp_zb_platform_config_t config = {
         .radio_config = ESP_ZB_DEFAULT_RADIO_CONFIG(),
         .host_config = ESP_ZB_DEFAULT_HOST_CONFIG(),
