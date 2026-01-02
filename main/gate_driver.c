@@ -168,3 +168,15 @@ void gate_driver_command(gate_driver_t* handle, gate_cmd_t cmd)
 
     xTaskNotify(d->task, (uint32_t)cmd, eSetValueWithOverwrite);
 }
+
+void gate_set_standby_state(void)
+{
+    const int idle_norm = SIGNAL_ACTIVE_HIGH ? 0 : 1;
+    const int idle_stop = SIGNAL_ACTIVE_HIGH ? 1 : 0;
+
+    gpio_out_init(SIGNAL_STOP_PIN, idle_stop);
+
+    gpio_out_init(SIGNAL_OPEN_PIN, idle_norm);
+    gpio_out_init(SIGNAL_CLOSE_PIN, idle_norm);
+    gpio_out_init(SIGNAL_PEDESTRIAN_PIN, idle_norm);
+}

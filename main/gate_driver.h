@@ -22,6 +22,8 @@ void gate_driver_destroy(gate_driver_t* d);
 
 void gate_driver_command(gate_driver_t* d, gate_cmd_t cmd);
 
+void gate_set_standby_state(void);
+
 #ifdef __cplusplus
 }
 #endif
