@@ -13,7 +13,7 @@ typedef enum {
     GATE_OPEN = 0,
     GATE_CLOSE,
     GATE_PEDESTRIAN,
-    GATE_SEQ_OPEN,
+    GATE_STOP,
 } gate_cmd_t;
 
 gate_driver_t* gate_driver_create(void);

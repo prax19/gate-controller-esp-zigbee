@@ -267,3 +267,34 @@ bool temp_sensor_driver_is_ready(temp_sensor_driver_t *handle)
     if (!d) return false;
     return d->ready;
 }
+
+bool temp_sensor_driver_read_once(const temp_sensor_config_t *cfg, int16_t *out_temp_c_x100)
+{
+    if (!out_temp_c_x100) return false;
+
+    float temp_c = 0.0f;
+
+    struct temp_sensor_driver d = {0};
+    d.cfg = cfg ? *cfg : TEMP_SENSOR_DRIVER_DEFAULT_CONFIG();
+
+    if (init_bus_and_find_sensor(&d) != ESP_OK) {
+        cleanup_bus_and_sensor(&d);
+        return false;
+    }
+
+    bool ok = do_measure(&d, &temp_c);
+    cleanup_bus_and_sensor(&d);
+
+    if (!ok) return false;
+
+    if (!isfinite(temp_c)) return false;
+
+    int32_t scaled = (int32_t)lroundf(temp_c * 100.0f);
+
+    if (scaled > 32767)  scaled = 32767;
+    if (scaled < -27315) scaled = -27315;
+
+    *out_temp_c_x100 = (int16_t)scaled;
+    return true;
+}
+

@@ -144,6 +144,7 @@ static esp_err_t zb_window_covering_movement_handler(const esp_zb_zcl_window_cov
         break;
 
     case ESP_ZB_ZCL_CMD_WINDOW_COVERING_STOP:
+        gate_driver_command(gate, GATE_STOP);
         ESP_LOGI(TAG, "GATE_STOP");
         break;
 
@@ -313,6 +314,9 @@ static void esp_zb_task(void *pvParameters)
     uint16_t identify_time = 0;
     uint8_t name_support = 0;
 
+    // Cluster list
+    esp_zb_cluster_list_t *clist = esp_zb_zcl_cluster_list_create();
+
     esp_zb_attribute_list_t *basic = esp_zb_zcl_attr_list_create(ESP_ZB_ZCL_CLUSTER_ID_BASIC);
     esp_zb_basic_cluster_add_attr(basic, ESP_ZB_ZCL_ATTR_BASIC_ZCL_VERSION_ID, &zcl_ver);
     esp_zb_basic_cluster_add_attr(basic, ESP_ZB_ZCL_ATTR_BASIC_POWER_SOURCE_ID, &power_src);
@@ -354,19 +358,26 @@ static void esp_zb_task(void *pvParameters)
     // esp_zb_attribute_list_t *device_temp_srv = esp_zb_device_temp_config_cluster_create(&temp_cfg);
 
     // Temperature Measurement (server) - cluster 0x0402
+
     static int16_t s_temp_measured = ESP_ZB_ZCL_TEMP_MEASUREMENT_MEASURED_VALUE_DEFAULT;
     static int16_t s_temp_min      = ESP_ZB_ZCL_TEMP_MEASUREMENT_MIN_MEASURED_VALUE_DEFAULT;
     static int16_t s_temp_max      = ESP_ZB_ZCL_TEMP_MEASUREMENT_MAX_MEASURED_VALUE_DEFAULT;
 
-    esp_zb_attribute_list_t *temp_meas_srv =
-        esp_zb_zcl_attr_list_create(ESP_ZB_ZCL_CLUSTER_ID_TEMP_MEASUREMENT);
+    bool is_temp_sensor_present = temp_sensor_driver_read_once(NULL, &s_temp_measured);
 
-    esp_zb_temperature_meas_cluster_add_attr(temp_meas_srv,
-        ESP_ZB_ZCL_ATTR_TEMP_MEASUREMENT_VALUE_ID, &s_temp_measured);
-    esp_zb_temperature_meas_cluster_add_attr(temp_meas_srv,
-        ESP_ZB_ZCL_ATTR_TEMP_MEASUREMENT_MIN_VALUE_ID, &s_temp_min);
-    esp_zb_temperature_meas_cluster_add_attr(temp_meas_srv,
-        ESP_ZB_ZCL_ATTR_TEMP_MEASUREMENT_MAX_VALUE_ID, &s_temp_max);
+    if(is_temp_sensor_present) {
+        esp_zb_attribute_list_t *temp_meas_srv =
+            esp_zb_zcl_attr_list_create(ESP_ZB_ZCL_CLUSTER_ID_TEMP_MEASUREMENT);
+
+        esp_zb_temperature_meas_cluster_add_attr(temp_meas_srv,
+            ESP_ZB_ZCL_ATTR_TEMP_MEASUREMENT_VALUE_ID, &s_temp_measured);
+        esp_zb_temperature_meas_cluster_add_attr(temp_meas_srv,
+            ESP_ZB_ZCL_ATTR_TEMP_MEASUREMENT_MIN_VALUE_ID, &s_temp_min);
+        esp_zb_temperature_meas_cluster_add_attr(temp_meas_srv,
+            ESP_ZB_ZCL_ATTR_TEMP_MEASUREMENT_MAX_VALUE_ID, &s_temp_max);
+
+        esp_zb_cluster_list_add_temperature_meas_cluster(clist, temp_meas_srv, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
+    }
 
     // Experimental features
 
@@ -390,7 +401,6 @@ static void esp_zb_task(void *pvParameters)
     );
     
     /* Joining cluster lists */
-    esp_zb_cluster_list_t *clist = esp_zb_zcl_cluster_list_create();
     esp_zb_cluster_list_add_basic_cluster( clist, basic,        ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
     esp_zb_cluster_list_add_identify_cluster(clist, identify_srv,ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
     esp_zb_cluster_list_add_groups_cluster( clist, groups_srv,  ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
@@ -398,7 +408,6 @@ static void esp_zb_task(void *pvParameters)
     esp_zb_cluster_list_add_window_covering_cluster(clist, wc_srv, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
     esp_zb_cluster_list_add_occupancy_sensing_cluster( clist, occupancy_sensor_srv,   ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
     // esp_zb_cluster_list_add_device_temp_config_cluster( clist, device_temp_srv,   ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
-    esp_zb_cluster_list_add_temperature_meas_cluster(clist, temp_meas_srv, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
     esp_zb_cluster_list_add_custom_cluster(clist, gate_cfg_srv, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
 
     /* Device and endpoint registering */

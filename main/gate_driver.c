@@ -4,33 +4,58 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
+#include "driver/gpio.h"
 
 #define SIGNAL_OPEN_PIN        GPIO_NUM_20
 #define SIGNAL_CLOSE_PIN       GPIO_NUM_21
+#define SIGNAL_STOP_PIN        GPIO_NUM_19
 #define SIGNAL_PEDESTRIAN_PIN  GPIO_NUM_18
-#define SIGNAL_SEQUENCE_PIN    GPIO_NUM_19
 
 #define SIGNAL_DURATION_MS     200
-
 #define SIGNAL_ACTIVE_HIGH     true
 
 #define TASK_STACK             2048
 #define TASK_PRIO              5
 #define NOTIFY_STOP_VALUE      0xFFFFFFFFu
 
+typedef enum {
+    SIG_OPEN = 0,
+    SIG_CLOSE,
+    SIG_STOP,
+    SIG_PED,
+    SIG_COUNT
+} gate_sig_t;
+
+struct gate_sig_cfg {
+    gpio_num_t pin;
+    bool invert;
+};
+
 struct gate_driver {
     TaskHandle_t task;
     SemaphoreHandle_t done;
 
-    gpio_num_t pin_open;
-    gpio_num_t pin_close;
-    gpio_num_t pin_ped;
-    gpio_num_t pin_seq;
-
     bool active_high;
+    TickType_t pulse_ticks;
+
+    struct gate_sig_cfg sig[SIG_COUNT];
 };
 
-static void gate_pin_init(gpio_num_t gpio, bool active_high)
+static inline int base_idle(bool active_high)  { return active_high ? 0 : 1; }
+static inline int base_pulse(bool active_high) { return active_high ? 1 : 0; }
+
+static inline int sig_level(const struct gate_driver* d, gate_sig_t s, bool pulse)
+{
+    int idle  = base_idle(d->active_high);
+    int pl    = base_pulse(d->active_high);
+
+    if (d->sig[s].invert) {
+        return pulse ? idle : pl;
+    }
+    return pulse ? pl : idle;
+}
+
+static void gpio_out_init(gpio_num_t gpio, int initial_level)
 {
     gpio_config_t io = {
         .pin_bit_mask = 1ULL << gpio,
@@ -40,38 +65,31 @@ static void gate_pin_init(gpio_num_t gpio, bool active_high)
         .intr_type = GPIO_INTR_DISABLE,
     };
     gpio_config(&io);
-
-    gpio_set_level(gpio, active_high ? 0 : 1);
+    gpio_set_level(gpio, initial_level);
 }
-
-static inline int level_idle(bool active_high)  { return active_high ? 0 : 1; }
-static inline int level_pulse(bool active_high) { return active_high ? 1 : 0; }
 
 static void all_idle(struct gate_driver* d)
 {
-    int idle = level_idle(d->active_high);
-    gpio_set_level(d->pin_ped,  idle);
-    gpio_set_level(d->pin_seq,  idle);
-    gpio_set_level(d->pin_open, idle);
-    gpio_set_level(d->pin_close,idle);
+    for (int s = 0; s < SIG_COUNT; ++s) {
+        gpio_set_level(d->sig[s].pin, sig_level(d, (gate_sig_t)s, false));
+    }
 }
 
-static void short_signal(struct gate_driver* d, gpio_num_t gpio)
+static void pulse_sig(struct gate_driver* d, gate_sig_t s)
 {
-    gpio_set_level(gpio, level_pulse(d->active_high));
-    vTaskDelay(pdMS_TO_TICKS(SIGNAL_DURATION_MS));
-    gpio_set_level(gpio, level_idle(d->active_high));
+    gpio_set_level(d->sig[s].pin, sig_level(d, s, true));
+    vTaskDelay(d->pulse_ticks);
+    gpio_set_level(d->sig[s].pin, sig_level(d, s, false));
 }
 
-static gpio_num_t cmd_to_pin(const struct gate_driver* d, gate_cmd_t cmd)
+static gate_sig_t cmd_to_sig(gate_cmd_t cmd)
 {
-    (void)d;
     switch (cmd) {
-        case GATE_PEDESTRIAN: return SIGNAL_PEDESTRIAN_PIN;
-        case GATE_SEQ_OPEN:   return SIGNAL_SEQUENCE_PIN;
-        case GATE_OPEN:       return SIGNAL_OPEN_PIN;
-        case GATE_CLOSE:      return SIGNAL_CLOSE_PIN;
-        default:              return SIGNAL_OPEN_PIN;
+        case GATE_OPEN:       return SIG_OPEN;
+        case GATE_CLOSE:      return SIG_CLOSE;
+        case GATE_STOP:       return SIG_STOP;
+        case GATE_PEDESTRIAN: return SIG_PED;
+        default:              return SIG_OPEN;
     }
 }
 
@@ -83,13 +101,12 @@ static void gate_task(void* arg)
 
     for (;;) {
         uint32_t v = 0;
-
         xTaskNotifyWait(0, 0xFFFFFFFFu, &v, portMAX_DELAY);
 
         if (v == NOTIFY_STOP_VALUE) break;
 
         all_idle(d);
-        short_signal(d, cmd_to_pin(d, (gate_cmd_t)v));
+        pulse_sig(d, cmd_to_sig((gate_cmd_t)v));
     }
 
     all_idle(d);
@@ -102,12 +119,14 @@ gate_driver_t* gate_driver_create(void)
     struct gate_driver* d = (struct gate_driver*)calloc(1, sizeof(*d));
     if (!d) return NULL;
 
-    d->pin_ped  = SIGNAL_PEDESTRIAN_PIN;
-    d->pin_seq  = SIGNAL_SEQUENCE_PIN;
-    d->pin_open = SIGNAL_OPEN_PIN;
-    d->pin_close= SIGNAL_CLOSE_PIN;
-
     d->active_high = SIGNAL_ACTIVE_HIGH;
+    d->pulse_ticks = pdMS_TO_TICKS(SIGNAL_DURATION_MS);
+
+    d->sig[SIG_OPEN]  = (struct gate_sig_cfg){ .pin = SIGNAL_OPEN_PIN,       .invert = false };
+    d->sig[SIG_CLOSE] = (struct gate_sig_cfg){ .pin = SIGNAL_CLOSE_PIN,      .invert = false };
+    d->sig[SIG_PED]   = (struct gate_sig_cfg){ .pin = SIGNAL_PEDESTRIAN_PIN, .invert = false };
+
+    d->sig[SIG_STOP]  = (struct gate_sig_cfg){ .pin = SIGNAL_STOP_PIN,       .invert = true  };
 
     d->done = xSemaphoreCreateBinary();
     if (!d->done) {
@@ -115,10 +134,11 @@ gate_driver_t* gate_driver_create(void)
         return NULL;
     }
 
-    gate_pin_init(d->pin_ped,  d->active_high);
-    gate_pin_init(d->pin_seq,  d->active_high);
-    gate_pin_init(d->pin_open, d->active_high);
-    gate_pin_init(d->pin_close,d->active_high);
+    for (int s = 0; s < SIG_COUNT; ++s) {
+        gpio_out_init(d->sig[s].pin, sig_level(d, (gate_sig_t)s, false));
+    }
+
+    all_idle(d);
 
     if (xTaskCreate(gate_task, "gate_drv", TASK_STACK, d, TASK_PRIO, &d->task) != pdPASS) {
         vSemaphoreDelete(d->done);

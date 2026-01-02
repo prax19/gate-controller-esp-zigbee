@@ -40,6 +40,9 @@ void temp_sensor_driver_trigger(temp_sensor_driver_t *handle);
 
 bool temp_sensor_driver_is_ready(temp_sensor_driver_t *handle);
 
+bool temp_sensor_driver_read_once(const temp_sensor_config_t *cfg, int16_t *out_temp_c_x100);
+
+
 #ifdef __cplusplus
 }
 #endif
