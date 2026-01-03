@@ -20,12 +20,14 @@ static const char *TAG = "ESP_ZB_GATE_CONTROLLER";
 
 // Zigbee parameters
 #define GATE_CFG_CLUSTER_ID              0xFF00
-// #define GATE_CFG_ATTR_TRANSITION_DS      0x0000 
+#define GATE_CFG_ATTR_TRANSITION_MS      0x0000 
 #define GATE_CFG_ATTR_BEAM_DEBOUNCE_MS   0x0001
 
-// static uint16_t s_transition_ds;
+static uint16_t s_transition_ms;
 static uint16_t s_beam_debounce_ms;
+
 static uint8_t s_lift_pct = 100; 
+static esp_zb_user_cb_handle_t s_wc_finish_alarm = ESP_ZB_USER_CB_HANDLE_INVALID;
 
 // Drivers
 led_driver_t *g_led = NULL; // LED handler
@@ -102,6 +104,14 @@ static void zb_report_beam_debounce(void *param)
     zb_report_attr_u16(GATE_CFG_CLUSTER_ID, GATE_CFG_ATTR_BEAM_DEBOUNCE_MS);
 }
 
+static void zb_report_transition(void *param)
+{
+    (void)param;
+    ESP_LOGI(TAG, "Reporting transition_ms=%u", s_transition_ms);
+    zb_report_attr_u16(GATE_CFG_CLUSTER_ID, GATE_CFG_ATTR_TRANSITION_MS);
+}
+
+
 static void wc_set_lift_pct(uint8_t pct_closed)
 {
     s_lift_pct = pct_closed;
@@ -115,6 +125,56 @@ static void wc_set_lift_pct(uint8_t pct_closed)
         ESP_ZB_ZCL_ATTR_WINDOW_COVERING_CURRENT_POSITION_LIFT_PERCENTAGE_ID);
 }
 
+static void wc_cancel_finish_alarm(void)
+{
+    if (s_wc_finish_alarm != ESP_ZB_USER_CB_HANDLE_INVALID) {
+        (void)esp_zb_scheduler_user_alarm_cancel(s_wc_finish_alarm);
+        s_wc_finish_alarm = ESP_ZB_USER_CB_HANDLE_INVALID;
+        if(s_transition_ms > 500){
+            led_driver_blink_once(g_led, LED_COLOR_RED);
+            led_driver_set(g_led, LED_MODE_OFF, LED_COLOR_RED);
+        }
+    }
+}
+
+static void wc_finish_cb(void *param)
+{
+    uint8_t target_pct = (uint8_t)(uintptr_t)param;
+
+    s_wc_finish_alarm = ESP_ZB_USER_CB_HANDLE_INVALID;
+    wc_set_lift_pct(target_pct);
+    if(s_transition_ms > 500){
+        led_driver_set(g_led, LED_MODE_OFF, LED_COLOR_RED);
+    }
+}
+
+static void wc_schedule_finish_alarm(uint8_t target_pct, uint32_t delay_ms)
+{
+    if(target_pct == 100) {
+        if(s_transition_ms > 500){
+            led_driver_set(g_led, LED_MODE_BLINK, LED_COLOR_YELLOW);
+        } else {
+            led_driver_blink_once(g_led, LED_COLOR_YELLOW);
+        }
+    } else if (target_pct == 0) {
+        if(s_transition_ms > 500){
+            led_driver_set(g_led, LED_MODE_BLINK, LED_COLOR_GREEN);
+        } else {
+            led_driver_blink_once(g_led, LED_COLOR_GREEN);
+        }
+    } else {
+        led_driver_set(g_led, LED_MODE_OFF, LED_COLOR_RED);
+    }
+    
+    wc_cancel_finish_alarm();
+
+    s_wc_finish_alarm = esp_zb_scheduler_user_alarm(
+        wc_finish_cb,
+        (void *)(uintptr_t)target_pct,
+        delay_ms
+    );
+
+}
 
 static esp_err_t zb_window_covering_movement_handler(const esp_zb_zcl_window_covering_movement_message_t *m)
 {
@@ -132,19 +192,18 @@ static esp_err_t zb_window_covering_movement_handler(const esp_zb_zcl_window_cov
     case ESP_ZB_ZCL_CMD_WINDOW_COVERING_UP_OPEN:
         ESP_LOGI(TAG, "GATE_OPEN");
         gate_driver_command(gate, GATE_OPEN);
-        wc_set_lift_pct(0);     // 0 = OPEN
-        led_driver_blink_once(g_led, LED_COLOR_GREEN);
+        wc_schedule_finish_alarm(0, s_transition_ms);
         break;
 
     case ESP_ZB_ZCL_CMD_WINDOW_COVERING_DOWN_CLOSE:
         ESP_LOGI(TAG, "GATE_CLOSE");
         gate_driver_command(gate, GATE_CLOSE);
-        wc_set_lift_pct(100);
-        led_driver_blink_once(g_led, LED_COLOR_RED);
+        wc_schedule_finish_alarm(100, s_transition_ms);
         break;
 
     case ESP_ZB_ZCL_CMD_WINDOW_COVERING_STOP:
         gate_driver_command(gate, GATE_STOP);
+        wc_cancel_finish_alarm();
         ESP_LOGI(TAG, "GATE_STOP");
         break;
 
@@ -176,7 +235,7 @@ static void start_gate_and_beam_if_needed(void)
 
 void schedule_network_steering() {
     ESP_LOGI(TAG, "Start secondary network steering");
-    // esp_zb_secur_network_min_join_lqi_set(0);
+    esp_zb_secur_network_min_join_lqi_set(0);
     esp_zb_scheduler_alarm((esp_zb_callback_t)esp_zb_bdb_start_top_level_commissioning,
             ESP_ZB_BDB_MODE_NETWORK_STEERING, ED_NETWORK_STEERING_RETRY_TIME);
     led_driver_set(g_led, LED_MODE_BLINK_FAST, LED_COLOR_BLUE);
@@ -221,6 +280,7 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
                     esp_zb_get_pan_id(), esp_zb_get_current_channel(), esp_zb_get_short_address());
                     start_gate_and_beam_if_needed();
                     esp_zb_scheduler_user_alarm(zb_report_beam_debounce, NULL, 3000);
+                    esp_zb_scheduler_user_alarm(zb_report_transition, NULL, 3000);
                     led_driver_set(g_led, LED_MODE_ON, LED_COLOR_GREEN);
                     led_driver_sleep(g_led, 5000);
         } else {
@@ -276,6 +336,15 @@ static esp_err_t zb_attribute_handler(const esp_zb_zcl_set_attr_value_message_t 
             }
 
             ESP_LOGI(TAG, "Beam debounce set to %dms", db);
+        }
+        else if (message->attribute.id == GATE_CFG_ATTR_TRANSITION_MS &&
+            message->attribute.data.type == ESP_ZB_ZCL_ATTR_TYPE_U16)
+        {
+            uint16_t db = *(uint16_t*)message->attribute.data.value;
+            s_transition_ms = db;
+            cfg_nvs_set_u16("transition_ms", db);
+
+            ESP_LOGI(TAG, "Transition set to %dms", db);
         }
     }
     return ret;
@@ -384,13 +453,13 @@ static void esp_zb_task(void *pvParameters)
     esp_zb_attribute_list_t *gate_cfg_srv =
         esp_zb_zcl_attr_list_create(GATE_CFG_CLUSTER_ID);
 
-    // esp_zb_custom_cluster_add_custom_attr(
-    //     gate_cfg_srv,
-    //     GATE_CFG_ATTR_TRANSITION_DS,
-    //     ESP_ZB_ZCL_ATTR_TYPE_U16,
-    //     ESP_ZB_ZCL_ATTR_ACCESS_READ_WRITE | ESP_ZB_ZCL_ATTR_ACCESS_REPORTING,
-    //     &s_gate_transition_ds
-    // );
+    esp_zb_custom_cluster_add_custom_attr(
+        gate_cfg_srv,
+        GATE_CFG_ATTR_TRANSITION_MS,
+        ESP_ZB_ZCL_ATTR_TYPE_U16,
+        ESP_ZB_ZCL_ATTR_ACCESS_READ_WRITE | ESP_ZB_ZCL_ATTR_ACCESS_REPORTING,
+        &s_transition_ms
+    );
 
     esp_zb_custom_cluster_add_custom_attr(
         gate_cfg_srv,
@@ -441,6 +510,7 @@ void app_main(void)
     g_led = led_driver_create();
 
     s_beam_debounce_ms = cfg_nvs_get_u16_def("beam_debounce", 200);
+    s_transition_ms = cfg_nvs_get_u16_def("transition_ms", 0);
 
     xTaskCreate(esp_zb_task, "Zigbee_main", 4096, NULL, 5, NULL);
 }

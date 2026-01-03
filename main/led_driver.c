@@ -80,6 +80,10 @@ static void color_on(struct led_driver* d, led_color_t c)
         case LED_COLOR_RED:   gpio_write(d->pin_r, true); break;
         case LED_COLOR_GREEN: gpio_write(d->pin_g, true); break;
         case LED_COLOR_BLUE:  gpio_write(d->pin_b, true); break;
+        case LED_COLOR_YELLOW:
+            gpio_write(d->pin_r, true);
+            gpio_write(d->pin_g, true);
+        break;
         default: break;
     }
 }
