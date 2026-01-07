@@ -15,5 +15,8 @@
     "--background-index",
     "--query-driver=**",
     "--compile-commands-dir=c:\\Users\\fhcar\\Desktop\\gate-controller-esp-zigbee\\build"
+  ],
+  "cSpell.words": [
+    "optocouplers"
   ]
 }
